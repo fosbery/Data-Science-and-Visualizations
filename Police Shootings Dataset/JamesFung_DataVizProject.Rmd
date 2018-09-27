@@ -2,7 +2,9 @@
 title: "Data Visualization Project - U.S. Police Officer Shootings"
 author: "James Fung"
 date: "9/18/2018"
-output: rmarkdown::github_document
+output: 
+  html_document:
+    keep_md: true
 ---
 
 ```{r setup, results='hide', warning=FALSE, message=FALSE}
