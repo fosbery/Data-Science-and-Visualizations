@@ -144,4 +144,4 @@ DataEFCons %>%
   labs(title="Ecological Footprint of Countries 2013",x="",y="global hectares per person")
 ggsave("original.pdf")
 ```
-
+test
