@@ -1,0 +1,147 @@
+---
+title: "Ecological Footprints"
+author: "James Fung, Irina Pogrebivsky"
+date: "9/30/2018"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+library(tidyverse)
+library(ggplot2)
+library(reshape2)
+library(gridExtra)
+library(ggrepel)
+
+eco <- read_csv("/Users/jamesfung/Dropbox/Graduate School/Data Science and Visualizations/Projects/Makeover Monday/Ecological Footprint/NFA 2018 Edition.csv")
+#eco <- read.csv("C:\\Users\\pogrebivskyi\\Desktop\\Villanova\\Data Visualization\\NFA 2018 Edition.csv")
+
+str(eco)
+```
+
+```{r}
+#Remove all NULL values and replaces them with NA. Convert factors to characters.
+
+eco %>%
+  mutate(total=total/1000000) %>% 
+  mutate_at(c(5,6,7,8,9,10,11),(as.character)) %>%
+  mutate_at(c(5,6,7,8,9,10,11),(as.integer)) -> ecoclean
+
+# str(ecoclean)
+# str(eco)
+#
+# View(ecoclean)
+# View(eco)
+```
+
+```{r}
+#Some test code.
+ecoclean %>% filter(country == 'China', record == 'AreaTotHA') -> chinatest
+
+chinatest %>% 
+  select(country,year,total) %>% 
+  mutate(totalpermil=total/1000000) %>% 
+  group_by(year) %>% 
+  mutate(yeartotalpermil=sum(totalpermil)) %>% 
+  distinct(year,yeartotalpermil) %>% 
+  ggplot() + geom_line(aes(x=year,y=yeartotalpermil))
+```
+
+
+```{r}
+#Convert USSR to Russian Federation.
+ecoclean$country[ecoclean$country == 'USSR'] <- 'Russian Federation'
+
+ecoclean %>% 
+  filter(country != 'World',record=='EFConsTotGHA') %>%  
+  select(country,year,total) %>% 
+  na.omit() %>% 
+  distinct(country,year,total) %>% 
+  group_by(country) %>% 
+  mutate(countrytot = sum(total))  %>%
+  ungroup(country) %>% 
+  arrange(desc(countrytot)) %>%
+  mutate(rank=dense_rank(desc(countrytot))) %>% 
+  filter(rank<10) %>%
+  ggplot() + geom_line(aes(x=year,y=total,color=country)) + labs(title='Most Ecologically Impacting Countries',y='Total Emission per Million',x='Year') + scale_x_continuous(breaks = seq(1960,2018, by=5))
+
+eco %>%
+  filter(country != 'World') %>%
+  select(country,year,total) %>%
+  group_by(country,year) %>%
+  mutate(totalemis = sum(total)) %>%
+  ungroup(country,year) %>%
+  distinct(country,year,totalemis) %>%
+  mutate(totalEMSpermil=totalemis/1000000) %>%
+  group_by(year) %>%
+  mutate(rank=rank(desc(totalEMSpermil))) %>%
+  filter(rank<5) %>%
+  ggplot() + geom_line(aes(x=year,y=totalEMSpermil,color=country)) + labs(title='Most Ecologically Impacting Countries',y='Total Emission per Million',x='Year') + scale_x_continuous(breaks = seq(1960,2018, by=5))
+```
+
+
+
+```{r}
+ecoclean %>% 
+  select(-country_code,-QScore) %>% 
+  filter(country != 'World')%>% 
+  gather(key="FootPrint",value="n",4:10) %>% 
+  spread(key = record, value = n) %>% 
+  select(-AreaTotHA,-BiocapTotGHA,-EFConsTotGHA,-EFProdTotGHA) %>% 
+  gather(key="record",value="n",4:7) %>% 
+  spread(key = FootPrint, value = n) %>%
+  group_by(country,year) %>% 
+  mutate(totalemis = sum(total),built_up_landemis=sum(built_up_land),carbonemis=sum(carbon),crop_landemis=sum(crop_land),fishing_groundemis=sum(fishing_ground),forest_landemis=sum(forest_land),grazing_landemis=sum(grazing_land)) %>% 
+  ungroup(country,year) %>% 
+  distinct(country,year,totalemis,built_up_landemis,carbonemis,crop_landemis,fishing_groundemis,forest_landemis,grazing_landemis) %>% 
+  mutate(totalEMSpermil=totalemis/1000000) %>% 
+  group_by(year) %>%  
+  mutate(rank=rank(desc(totalEMSpermil))) %>% 
+  filter(rank<10)->dc
+dc
+  ggplot()+
+  geom_line(data=dc,aes(year,totalemis,color=country),size =1)+
+  scale_y_continuous(breaks = seq(0,23, by=1))+
+  scale_x_continuous(breaks = seq(1960,2018, by=5))+
+  guides(fill=FALSE,color=FALSE)+
+  geom_label_repel(data=dc %>% filter(year==2014),aes(year,totalemis,label = country),nudge_x = 1,na.rm = TRUE)
+```
+
+```{r fig.width=25,fig.height=15}
+ecoclean %>% 
+  select(-country_code,-QScore,-total) %>% 
+  filter(country !="World")%>% 
+  gather(key="FootPrint",value="n",4:9) %>% 
+  spread(key = record, value = n) %>% 
+  select(country,year,FootPrint,EFConsPerCap) %>%
+  filter(year==2013&EFConsPerCap!=0)->DataEFCons
+DataEFCons$FootPrint<-factor(DataEFCons$FootPrint, levels = c("carbon","fishing_ground","crop_land","built_up_land","forest_land","grazing_land"))
+
+DataEFCons %>% 
+  ggplot(aes(reorder(country,-EFConsPerCap),EFConsPerCap))+
+  geom_col(aes(fill=FootPrint), stat="identity",color="white",width=.5)+
+  guides(fill = guide_legend(nrow = 1))+
+  theme(axis.text.x = element_text(angle = 60, hjust = 1),
+        axis.text.y=element_text(size=15),
+        axis.title.y=element_text(size=20),
+        plot.title = element_text(size=30,hjust=.5, vjust=12),
+        axis.ticks.length=unit(.5, "cm"),
+        axis.ticks.y=element_blank(),
+        plot.margin=unit(c(1,1,1,1),"cm"),
+        panel.border=element_rect(fill=NA),
+        panel.grid.major.x =element_blank(),
+        panel.grid.major.y = element_line(color = "black"),
+        legend.position=c(.5,1),
+        legend.direction = "horizontal",
+        legend.title = element_blank(),
+        legend.key.size=unit(1.5,'lines'),
+        legend.background=element_rect(color="gray"),
+        legend.spacing.x = unit(1, 'cm'),
+        legend.text=element_text(size=20),
+        panel.grid.minor.y =element_blank(),
+        panel.background = element_blank())+
+  scale_fill_manual(values=c("#003399","#6699FF","#FF9966","#990000","#99CC99","#FFCC99"),labels = c("Carbon","Fishing Grounds","Crop Land","Built-up Land","Forest Products","Grazing Land"))+
+  scale_y_continuous(breaks=seq(0,23,by=5),limits = c(0,15), expand = c(0,0))+
+  labs(title="Ecological Footprint of Countries 2013",x="",y="global hectares per person")
+ggsave("original.pdf")
+```
+
