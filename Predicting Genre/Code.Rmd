@@ -1,0 +1,171 @@
+---
+title: "Semester Project - Data Science and Visualizations"
+output: html_notebook
+---
+
+```{r setup, include=FALSE}
+library(tidyverse)
+library(rvest)
+library(stopwords)
+library(wordcloud)
+library(rcorpora)
+library(purrr)
+```
+
+```{r}
+#Create list of URL's.
+list_url <- c("https://www.billboard.com/charts/greatest-of-all-time-pop-songs-artists",
+                  "https://www.billboard.com/charts/greatest-country-artists",
+              "https://www.billboard.com/charts/greatest-r-b-hip-hop-artists",
+              "https://www.billboard.com/charts/greatest-alternative-artists")
+
+#Initialize a tibble to store results.
+artists <- tibble()
+
+for(i in 1:4) {
+  base_url <- list_url[i]
+  webpage <- read_html(base_url)
+  
+  #Get the artist name
+  Artist <- html_nodes(webpage, ".chart-list-item__text")
+  Artist <- as.character(html_text(Artist,trim=TRUE))
+
+  # Get the artist rank
+  rank <- html_nodes(webpage, ".chart-list-item__rank")
+  rank <- as.numeric(html_text(rank))
+
+  # Save it to a tibble, grab top 10.
+  top_artists <- tibble(Artist, 'Rank' = rank) %>%
+                  filter(rank <= 10)
+  
+  #Create genre column.
+  if(i==1){
+    top_artists <- top_artists %>% mutate(genre='Pop')
+  }
+  else if (i==2){
+    top_artists <- top_artists %>% mutate(genre='Country')
+  }
+  else if (i==3){
+    top_artists <- top_artists %>% mutate(genre='R&B')
+  }
+    else if (i==4){
+    top_artists <- top_artists %>% mutate(genre='Alt-Rock')
+  }
+  
+  #Bind these results to the initialized tibble.
+  artists <- bind_rows(artists,top_artists)
+}
+
+#Scrape rap seperately.
+rap_url <- "https://www.billboard.com/photos/6723017/the-10-best-rappers-of-all-time"
+rappage <- read_html(rap_url)
+
+#Get the artist name
+rappers <- html_nodes(rappage, ".gallery-item__title")
+rappers <- as.character(html_text(rappers,trim=TRUE))
+
+#Clean up the rankings.
+rapranks <- substr(rappers,1,2)
+rapranks <- gsub("[.]","",rapranks)
+
+#Clean up the rappers.
+rappers <- substr(rappers, start=4,stop=nchar(rappers))
+
+#Create the tibble, clean up tibble.
+toprappers <- tibble(Artist = rappers,Rank = rapranks, genre='Rap')
+toprappers <- slice(toprappers,-1)
+toprappers$Rank <- as.numeric(toprappers$Rank)
+
+#Bind tibble to other artists.
+artists <- bind_rows(artists,toprappers)
+
+#Bind the missing top 1 from every genre.
+artists <- add_row(artists,Artist='Rihanna',Rank='1',genre='Pop')
+artists <- add_row(artists,Artist='Foo Fighters',Rank='1',genre='Alt-Rock')
+artists <- add_row(artists,Artist='George Strait',Rank='1',genre='Country')
+artists <- add_row(artists,Artist='The Temptations',Rank='1',genre='R&B')
+
+#Fix taylor swift.
+artists$Artist[artists$Artist == 'Taylor Swift\n\n\n\n\n\n\n\nSong Lyrics'] <- 'Taylor Swift'
+
+#Change rank to a number.
+artists$Rank <- as.numeric(artists$Rank)
+
+#Sort by genre.
+artists %>% arrange(genre,Rank)
+
+```
+
+```{r}
+#Scrape all of the songs for each artist.
+
+#Format the link to navigate to the artists genius webpage
+genius_urls <- paste0("https://genius.com/artists/",artists$Artist)
+
+#Initialize a tibble to store the results
+artist_lyrics <- tibble()
+
+# Outer loop to get the song links for each artist 
+for (i in 20:40) {
+  genius_page <- read_html(genius_urls[i])
+  song_links <- html_nodes(genius_page, ".mini_card_grid-song a") %>%
+      html_attr("href") 
+  
+   #Inner loop to get the Song Name and Lyrics from the Song Link    
+    for (j in 1:5) {
+        
+      # Get lyricshm
+      lyrics_scraped <- read_html(song_links[j]) %>%
+          html_nodes("div.lyrics p") %>%
+          html_text()
+        
+      # Get song name
+      song_name <- read_html(song_links[j]) %>%
+         html_nodes("h1.header_with_cover_art-primary_info-title") %>%
+         html_text()
+        
+      # Save the details to a tibble
+      artist_lyrics <- rbind(artist_lyrics, tibble(Rank = artists$Rank[i],
+                                                   Artist = artists$Artist[i],
+                                                   Song = song_name,
+                                                   Lyrics = lyrics_scraped,
+                                                   Genre = artists$genre[i]))
+      print(paste(song_name, "complete!"))
+      
+      # Insert a time lag - to prevent me from getting booted from the site :)
+      Sys.sleep(5)
+     }
+} 
+
+#Inspect the results
+artist_lyrics
+
+```
+
+```{r}
+#Clean the lyrics.
+artist_lyrics$cleanlyrics <- gsub("\n"," ",artist_lyrics$Lyrics)
+artist_lyrics$cleanlyrics <- sub("[.*]", "", artist_lyrics$cleanlyrics)
+artist_lyrics$cleanlyrics <- tolower(artist_lyrics$cleanlyrics)
+artist_lyrics$cleanlyrics <- gsub("[[:punct:]]","",artist_lyrics$cleanlyrics)
+artist_lyrics$cleanlyrics <- gsub(stopwords("english"),"",artist_lyrics$cleanlyrics)
+artist_lyrics$cleanlyrics <- artist_lyrics$cleanlyrics[!artist_lyrics$cleanlyrics %in% stopwords("english")]
+
+#Count curse words.
+curse <- corpora("words/expletives")$expletives
+curse <- unlist(curse)
+artist_lyrics$numcurse <- str_count(artist_lyrics$cleanlyrics,paste(curse,collapse="|"))
+artist_lyrics
+
+#word.pairs <- paste(test,lead(test))
+#word.pairs
+
+#test %>% data.frame(word=.) %>% 
+#  group_by(word) %>% 
+#  summarize(freq=n()) %>% 
+#  ungroup() %>% 
+#  arrange(desc(freq))
+
+#wordcloud(test)
+```
+
