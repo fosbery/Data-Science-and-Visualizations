@@ -1,0 +1,574 @@
+---
+title: "Predicting Genre with Machine Learning"
+author: "James Fung"
+date: "12/18/2018"
+output: html_document
+---
+
+### WRITEUP SECTION
+
+For my project, the biggest challenges I had was understanding and manipulating text data. At the beginning, I had tried to manipulate my lyrics into list format, but realized that breaking it out into lists causes the original structure of the data frame to be lost (artists, genre, etc.) Fortunately I was able to fix many of these problems by simply using gsub and using Corpus. However, learning how Corpus' worked was a whole different story, and was especially problematic when I created my comparison cloud. The comparison cloud compares frequency of terms across documents, so I had to dive into it and really understand what a "document" represents. Fortunately through a lot of trial and error I was able to figure it out.
+
+During my project, I was not surprised at how good the models were at predicting certain genres, such as Rap and Alt-Rock. However, I was particularly surprised at how hard of a time it had a predicting Country music, as the results from my wordcloud showed that it uses very distinct terms (driveway, truck, whiskey, etc.) 
+
+I also attempted to produce a neural network along with my trees (bottom of code), but I was very surprised at how poorly the neural network performed. I am assuming this is because the data is too high dimensional, whilst decision trees and random forest has some sort of variable reduction built into the models.
+
+
+```{r setup, include=FALSE}
+#Data visualization and etc.
+library(tidyverse)
+library(rvest)
+library(stopwords)
+library(wordcloud)
+library(rcorpora)
+library(purrr)
+library(tm)
+library(ggrepel)
+library(corpus)
+
+#Modeling.
+#Neural network
+library(nnet)
+library(caret)
+
+#Random forest and decision trees.
+library(caTools)
+library(rpart)
+library(rpart.plot)
+library(randomForest)
+
+library(scales)
+```
+
+### FUNCTION LOADING STAGE ###
+
+```{r}
+#Setup the sentiment function.
+
+ score.sentiment = function(sentences, pos.words, neg.words, .progress='none')
+{
+require(plyr)
+require(stringr)
+# we got a vector of sentences. plyr will handle a list or a vector as an "l" for us
+# we want a simple array of scores back, so we use "l" + "a" + "ply" = laply:
+scores = laply(sentences, function(sentence, pos.words, neg.words) {
+       # clean up sentences with R's regex-driven global substitute, gsub():
+       sentence = gsub('[[:punct:]]', '', sentence)
+       sentence = gsub('[[:cntrl:]]', '', sentence)
+       sentence = gsub('\\d+', '', sentence)
+       # and convert to lower case:
+       sentence = tolower(sentence)
+       # split into words. str_split is in the stringr package
+       word.list = str_split(sentence, '\\s+')
+       # sometimes a list() is one level of hierarchy too much
+       words = unlist(word.list)
+       # compare our words to the dictionaries of positive & negative terms
+       pos.matches = match(words, pos.words)
+       neg.matches = match(words, neg.words)
+       # match() returns the position of the matched term or NA
+       # we just want a TRUE/FALSE:
+       pos.matches = !is.na(pos.matches)
+       neg.matches = !is.na(neg.matches)
+       # and conveniently enough, TRUE/FALSE will be treated as 1/0 by sum():
+       score = sum(pos.matches) - sum(neg.matches)
+       return(score)
+}, pos.words, neg.words, .progress=.progress )
+scores.df = data.frame(score=scores, text=sentences)
+return(scores.df)
+ }
+
+#Setup the confusion matrix GGPLOT function - credit to stackexchange from providing it.
+ggplotConfusionMatrix <- function(m){
+  mytitle <- paste("Accuracy", percent_format()(m$overall[1]),
+                   "Kappa", percent_format()(m$overall[2]))
+  p <-
+    ggplot(data = as.data.frame(m$table) ,
+           aes(x = Reference, y = Prediction)) +
+    geom_tile(aes(fill = log(Freq)), colour = "white") +
+    scale_fill_gradient(low = "white", high = "steelblue") +
+    geom_text(aes(x = Reference, y = Prediction, label = Freq)) +
+    theme(legend.position = "none") +
+    ggtitle(mytitle)
+  return(p)
+}
+
+#Function to count pairs of words rather than one. Provided by documentation on tm.r-forge.r-project.com
+BigramTokenizer <-
+  function(x)
+    unlist(lapply(ngrams(words(x), 2), paste, collapse = " "), use.names = FALSE)
+```
+
+
+### DATA SCRAPING STAGE ###
+
+This section is commented out so that the code is not rerun.
+
+```{r}
+#Create list of URL's.
+# list_url <- c("https://www.billboard.com/charts/greatest-of-all-time-pop-songs-artists",
+#                   "https://www.billboard.com/charts/greatest-country-artists",
+#               "https://www.billboard.com/charts/greatest-r-b-hip-hop-artists",
+#               "https://www.billboard.com/charts/greatest-alternative-artists")
+# 
+# #Initialize a tibble to store results.
+# artists <- tibble()
+# 
+# for(i in 1:4) {
+#   base_url <- list_url[i]
+#   webpage <- read_html(base_url)
+#   
+#   #Get the artist name
+#   Artist <- html_nodes(webpage, ".chart-list-item__text")
+#   Artist <- as.character(html_text(Artist,trim=TRUE))
+# 
+#   # Get the artist rank
+#   rank <- html_nodes(webpage, ".chart-list-item__rank")
+#   rank <- as.numeric(html_text(rank))
+# 
+#   # Save it to a tibble, grab top 10.
+#   top_artists <- tibble(Artist, 'Rank' = rank) %>%
+#                   filter(rank <= 20)
+#   
+#   #Create genre column.
+#   if(i==1){
+#     top_artists <- top_artists %>% mutate(genre='Pop')
+#   }
+#   else if (i==2){
+#     top_artists <- top_artists %>% mutate(genre='Country')
+#   }
+#   else if (i==3){
+#     top_artists <- top_artists %>% mutate(genre='R&B')
+#   }
+#     else if (i==4){
+#     top_artists <- top_artists %>% mutate(genre='Alt-Rock')
+#   }
+#   
+#   #Bind these results to the initialized tibble.
+#   artists <- bind_rows(artists,top_artists)
+# }
+# 
+# #Scrape rap seperately.
+# rap_url <- "https://www.billboard.com/photos/6723017/the-10-best-rappers-of-all-time"
+# rappage <- read_html(rap_url)
+# 
+# #Get the artist name
+# rappers <- html_nodes(rappage, ".gallery-item__title")
+# rappers <- as.character(html_text(rappers,trim=TRUE))
+# 
+# #Clean up the rankings.
+# rapranks <- substr(rappers,1,2)
+# rapranks <- gsub("[.]","",rapranks)
+# 
+# #Clean up the rappers.
+# rappers <- substr(rappers, start=4,stop=nchar(rappers))
+# 
+# #Create the tibble, clean up tibble.
+# toprappers <- tibble(Artist = rappers,Rank = rapranks, genre='Rap')
+# toprappers <- slice(toprappers,-1)
+# toprappers$Rank <- as.numeric(toprappers$Rank)
+# 
+# #Bind tibble to other artists.
+# artists <- bind_rows(artists,toprappers)
+# 
+# #Bind the missing top 1 from every genre.
+# artists <- add_row(artists,Artist='Rihanna',Rank='1',genre='Pop')
+# artists <- add_row(artists,Artist='Foo Fighters',Rank='1',genre='Alt-Rock')
+# artists <- add_row(artists,Artist='George Strait',Rank='1',genre='Country')
+# artists <- add_row(artists,Artist='The Temptations',Rank='1',genre='R&B')
+# 
+# #Fix taylor swift.
+# artists$Artist[artists$Artist == 'Taylor Swift\n\n\n\n\n\n\n\nSong Lyrics'] <- 'Taylor Swift'
+# 
+# 
+# #Let's add some more rappers to even it out.
+# artists <- add_row(artists,Artist='Kanye West',Rank='11',genre='Rap')
+# artists <- add_row(artists,Artist='Nicki Minaj',Rank='13',genre='Rap')
+# artists <- add_row(artists,Artist='Snoop Dogg',Rank='14',genre='Rap')
+# artists <- add_row(artists,Artist='2Pac',Rank='15',genre='Rap')
+# artists <- add_row(artists,Artist='Future',Rank='16',genre='Rap')
+# artists <- add_row(artists,Artist='J. Cole',Rank='17',genre='Rap')
+# artists <- add_row(artists,Artist='DMX',Rank='18',genre='Rap')
+# artists <- add_row(artists,Artist='Busta Rhymes',Rank='19',genre='Rap')
+# artists <- add_row(artists,Artist='T.I.',Rank='20',genre='Rap')
+# 
+# #Change rank to a number.
+# artists$Rank <- as.numeric(artists$Rank)
+# 
+# #Sort by genre.
+# artists %>% arrange(genre,Rank) -> artists
+```
+
+```{r}
+#Scrape 5 songs for each artist.
+# 
+# #Format the link to navigate to the artists genius webpage
+# genius_urls <- paste0("https://genius.com/artists/",artists$Artist)
+# 
+# genius_urls
+# 
+# #Initialize a tibble to store the results
+# artist_lyrics <- tibble()
+# 
+# #Loop for each artist.
+# for (i in 1:nrow(artists)) {
+#   try(genius_page <- read_html(genius_urls[i]))
+#   try(song_links <- html_nodes(genius_page, ".mini_card_grid-song a") %>%
+#       html_attr("href") )
+#   
+#    #Loop for song names and lyrics.
+#     for (j in 1:10) {
+#         
+#       #Lyrics.
+#       try(lyrics_scraped <- read_html(song_links[j]) %>%
+#           html_nodes("div.lyrics p") %>%
+#           html_text())
+#         
+#       #Song name.
+#       try(song_name <- read_html(song_links[j]) %>%
+#          html_nodes("h1.header_with_cover_art-primary_info-title") %>%
+#          html_text())
+#         
+#       # Save the details to a tibble
+#       artist_lyrics <- rbind(artist_lyrics, tibble(Rank = artists$Rank[i],
+#                                                    Artist = artists$Artist[i],
+#                                                    Song = song_name,
+#                                                    Lyrics = lyrics_scraped,
+#                                                    Genre = artists$genre[i]))
+#       
+#       #Print results to check if each song worked.
+#       print(paste(song_name, "complete!"))
+#       
+#       # Insert a time lag to prevent being banned.
+#       Sys.sleep(5)
+#      }
+# } 
+# 
+# #Save results out so that I don't need to rescrape.
+# write.csv(artist_lyrics,'song.csv')
+```
+
+```{r}
+#Import the csv from the saved scrape results.
+artist_lyrics <- read_csv("/Users/jamesfung/Dropbox/Graduate School/Data Science and Visualizations/Projects/Semester Project/song.csv")
+```
+
+```{r}
+#There are some songs that appear multiple times. Let's remove these songs entirely.
+#Randomly shuffle so that certain genres don't lose too many songs.
+artist_lyrics <- artist_lyrics[sample(nrow(artist_lyrics)),]
+
+#Only keep the first instance.
+#artist_lyrics$Song[duplicated(artist_lyrics$Song)]
+artist_lyrics <- subset(artist_lyrics, !duplicated(artist_lyrics$Song))
+
+#How many are remaining for each genre?
+table(artist_lyrics$Genre)
+
+#Select only the columns I need.
+artist_lyrics %>% select(Genre,Artist,Song,Lyrics) -> artist_lyrics
+```
+
+### DATA PROCESSING AND VISUALZIATION STAGE ###
+
+```{r fig.width=10,fig.height=5}
+#Clean the lyrics.
+artist_lyrics$cleanlyrics <- gsub("\n"," ",artist_lyrics$Lyrics)
+artist_lyrics$cleanlyrics <- gsub("-"," ",artist_lyrics$cleanlyrics)
+artist_lyrics$cleanlyrics <- gsub("\\[.*?\\]", "", artist_lyrics$cleanlyrics)
+artist_lyrics$cleanlyrics <- tolower(artist_lyrics$cleanlyrics)
+artist_lyrics$cleanlyrics <- gsub("[[:punct:]]","",artist_lyrics$cleanlyrics)
+artist_lyrics$cleanlyrics <- gsub("intro","",artist_lyrics$cleanlyrics)
+artist_lyrics$cleanlyrics <- gsub("verse","",artist_lyrics$cleanlyrics)
+artist_lyrics$cleanlyrics <- gsub("chorus","",artist_lyrics$cleanlyrics)
+artist_lyrics$cleanlyrics <- gsub("the","",artist_lyrics$cleanlyrics)
+artist_lyrics$cleanlyrics <- gsub("caus","cause",artist_lyrics$cleanlyrics)
+artist_lyrics$cleanlyrics <- gsub("'","cause",artist_lyrics$cleanlyrics)
+
+#Count how many words per song.
+artist_lyrics$countwords <- str_count(artist_lyrics$cleanlyrics,'\\s+')+1
+
+#Sentiment analysis on each song.
+#Calculate and graph the sentiment score for each tweet.
+pos.words <- scan('/Users/jamesfung/Dropbox/Graduate School/Data Science and Visualizations/Notes/Week 10 - Text Mining/positivewords.rtf',what='character',comment.char=';')
+
+#Not really sure why there are \ in the words, remove.
+pos.words <- gsub("\\\\","",pos.words)
+
+neg.words <- scan('/Users/jamesfung/Dropbox/Graduate School/Data Science and Visualizations/Notes/Week 10 - Text Mining/negativewords.rtf',what='character',comment.char=';')
+neg.words <- gsub("\\\\","",neg.words)
+
+score <- score.sentiment(artist_lyrics$cleanlyrics, pos.words,neg.words)
+score$text <- NULL
+
+#Create an index in both data frames to join the score.
+score$index <- seq.int(nrow((score)))
+artist_lyrics$index <- seq.int(nrow(artist_lyrics))
+
+#Join on the index.
+artist_lyrics %>% left_join(score,by='index') -> artist_lyrics
+
+detach(package:plyr)
+
+#Average score of sentiment analysis by genre.
+artist_lyrics %>% select(score,Genre) %>% group_by(Genre) %>% summarise(avgscore = mean(score)) #%>% ggplot() + geom_col(aes(x=Genre,y=avgscore))
+
+#Distribution of sentiment analysis by genre.
+artist_lyrics %>% select(score,Genre) %>% ggplot(aes(x=score,fill=Genre,color=Genre)) + geom_density(alpha=.1) + labs(title='Distribution of Sentiment Analysis Per Genre',x='Sentiment Score',y='Density')
+
+#Check out some of the least positive and most positive artists.
+artist_lyrics %>% select(Artist,score) %>% group_by(Artist) %>% summarise(avg=mean(score)) %>% arrange(avg)
+```
+
+Although the means of the five distributions are different - there appears to be lots of overlap occuring which may cause the created score variable to not be a great predictor of genre.
+
+```{r fig.width=9,fig.height=5}
+#Plot a graph showing average number of words per genre.
+artist_lyrics %>% select(Genre,countwords) %>% 
+  group_by(Genre) %>% 
+  summarise(avgwords = mean(countwords))
+
+#Density of genre.
+artist_lyrics %>% select(Genre,countwords) %>% 
+  ggplot(aes(x=countwords,fill=Genre,color=Genre)) + geom_density(alpha=.1) + labs(title='Distribution of # of Words Per Genre',x='# of Words per Song',y='Density')
+```
+
+Compared to the score, the number of words in each genre is very distinct, especially in Rap and Pop. Alt-Rock and Country also has very high kurtosis, indicating that lots of their songs fall into a narrow range. This seems to be a good predictor of genre. 
+
+### PRE-MODELING STAGE ###
+
+```{r}
+#Pre-modeling stage.
+
+artist_lyrics %>% filter(Genre=='R&B')  -> filterrb
+artist_lyrics %>% filter(Genre=='Rap') -> filterrap
+artist_lyrics %>% filter(Genre=='Alt-Rock') -> filterrock
+artist_lyrics %>% filter(Genre=='Country') -> filtercountry
+artist_lyrics %>% filter(Genre=='Pop') -> filterpop
+
+#Let's convert this to a corpus to make some things easier.
+corpusrb <- Corpus(VectorSource(filterrb$cleanlyrics))
+corpusrap <- Corpus(VectorSource(filterrap$cleanlyrics))
+corpusrock <- Corpus(VectorSource(filterrock$cleanlyrics))
+corpuscountry <- Corpus(VectorSource(filtercountry$cleanlyrics))
+corpuspop <- Corpus(VectorSource(filterpop$cleanlyrics))
+
+#Some text cleaning that may have been missed in prior step.
+
+#Whitespaces.
+corpusrb <- tm_map(corpusrb,stripWhitespace)
+corpusrap <- tm_map(corpusrap,stripWhitespace)
+corpusrock <- tm_map(corpusrock,stripWhitespace)
+corpuscountry <- tm_map(corpuscountry,stripWhitespace)
+corpuspop <- tm_map(corpuspop,stripWhitespace)
+
+#Stopwords.
+stopwords <- gsub("[[:punct:]]","",stopwords("english"))
+corpusrb <- tm_map(corpusrb,removeWords,stopwords)
+corpusrap <- tm_map(corpusrap,removeWords,stopwords)
+corpusrock <- tm_map(corpusrock,removeWords,stopwords)
+corpuscountry <- tm_map(corpuscountry,removeWords,stopwords)
+corpuspop <- tm_map(corpuspop,removeWords,stopwords)
+
+#Document stemming.
+corpusrb <- tm_map(corpusrb,stemDocument,language="english")
+corpusrap <- tm_map(corpusrap,stemDocument,language="english")
+corpusrock <- tm_map(corpusrock,stemDocument,language="english")
+corpuscountry <- tm_map(corpuscountry,stemDocument,language="english")
+corpuspop <- tm_map(corpuspop,stemDocument,language="english")
+
+#Single words for wordcloud.
+dtmcloudrb <- DocumentTermMatrix(corpusrb)
+dtmcloudrap <- DocumentTermMatrix(corpusrap)
+dtmcloudrock <- DocumentTermMatrix(corpusrock)
+dtmcloudcountry <- DocumentTermMatrix(corpuscountry)
+dtmcloudpop <- DocumentTermMatrix(corpuspop)
+
+#Entire dataset for modeling.
+#corpus <- Corpus(VectorSource(artist_lyrics$cleanlyrics))
+corpus <- VCorpus(VectorSource(artist_lyrics$cleanlyrics))
+corpus <- tm_map(corpus,stripWhitespace)
+stopwords <- gsub("[[:punct:]]","",stopwords("english"))
+corpus <- tm_map(corpus,removeWords,stopwords)
+corpus <- tm_map(corpus,stemDocument,language="english")
+dtm <- DocumentTermMatrix(corpus)
+dtm <- removeSparseTerms(dtm,.98)
+
+
+#Create term_stats for pairs of words for visualizations. 
+#rbpair <- term_stats(corpusrb,ngrams=2:2)
+#rappair <- term_stats(corpusrap,ngrams=2:2)
+#rockpair <- term_stats(corpusrock,ngrams=2:2)
+#countrypair <- term_stats(corpuscountry,ngrams=2:2)
+#poppair <- term_stats(corpuspop,ngrams=2:2)
+
+#Pair the entire dataset for modeling.
+#dtm <- DocumentTermMatrix(corpus,control=list(tokenize=BigramTokenizer))
+#dtm <- removeSparseTerms(dtm,.98)
+```
+
+### ADDITIONAL VISUALIZATIONS - WORDCLOUDS ###
+
+```{r fig.width=15,fig.height=10}
+#Rock music wordcloud and proportion comparison.
+rocksingle <- term_stats(corpusrock,ngrams=1:1)
+
+rocksingle %>% arrange(desc(count)) %>% head(20) -> rocksingle
+rocksingle %>% mutate(prop = support/length(artist_lyrics$Genre=='Alt-Rock')*100) -> rocksingle
+
+dark2 <- brewer.pal(8,"Dark2")
+
+wordcloud(rocksingle$term,rocksingle$count,rot.per=.2,color=dark2,random.order=FALSE,scale=c(10,2))
+ggplot(rocksingle,aes(reorder(term,-prop,sum),prop,fill='red')) + geom_col() + labs(title='Proportion of Alt-Rock Songs Words Appear In',x='Top 20 words',y='Proportion (%)')
+
+#Wordcloud of all genres.
+rbsingle <- term_stats(corpusrb,ngrams=1:1)
+rapsingle <- term_stats(corpusrap,ngrams=1:1)
+rocksingle <- term_stats(corpusrock,ngrams=1:1)
+countrysingle <- term_stats(corpuscountry,ngrams=1:1)
+popsingle <- term_stats(corpuspop,ngrams=1:1)
+
+#R&B VS POP.
+par(mfrow=c(1,2))
+rbsingle %>% arrange(desc(count)) %>% head(20) -> rbsingle
+popsingle %>% arrange(desc(count)) %>% head(20) -> popsingle
+
+wordcloud(rbsingle$term,rbsingle$count,rot.per=.2,color=dark2,random.order=FALSE,scale=c(10,2))
+wordcloud(popsingle$term,popsingle$count,rot.per=.2,color=dark2,random.order=FALSE,scale=c(10,2))
+
+#Comparison cloud.
+par(mfrow=c(1,1))
+testrb<-paste(filterrb$cleanlyrics,collapse=" ")
+testpop<-paste(filterpop$cleanlyrics,collapse=" ")
+testcountry<-paste(filtercountry$cleanlyrics,collapse=" ")
+testrap<-paste(filterrap$cleanlyrics,collapse=" ")
+testrock<-paste(filterrock$cleanlyrics,collapse=" ")
+
+#Collapse all the vectors into one.
+all = c(testrb,testpop,testcountry,testrap,testrock)
+testcorpus = Corpus(VectorSource(all))
+cloudtdm = TermDocumentMatrix(testcorpus)
+cloudtdm = as.matrix(cloudtdm)
+
+#Append the labels.
+colnames(cloudtdm) = c("R&B","POP","COUNTRY","RAP","ALT-ROCK")
+
+#Comparison cloud.
+comparison.cloud(cloudtdm, random.order=FALSE, colors = c("indianred3","lightsteelblue3","black","darkgreen","navyblue"),
+                 title.size=2.5, max.words=200,scale=c(5,1.5))
+```
+
+From a predictive modeling point of view, one might think that modeling genre can be based off of the top 20 most frequently appearing words. However, looking at a bar graph of this breakdown shows that it may not be the case - the most frequent song only appears in about 10% of songs in Altenrative Rock. Furthermore, if one compares a wordcloud between genres (R&B and Pop), it is obvious that the top 20 words that appear in each genre is often shared across genres. 
+
+Fortunately - Wordcloud has an option to do a comparison cloud. Examining the results, it is clear that there are terms towards the middle that are often shared across genres. However, as you go outwards from the middle, the wordcloud presents terms that are unique to that genre. From this, I think that all words in each song need to be fed into the algorithms to predict the genre, as to not miss these less frequent terms. 
+
+### MODELING STAGE ###
+
+```{r}
+#Final data prep.
+
+#Convert dtm to data frame, rebind rows back in.
+lyrics=as.data.frame(as.matrix(dtm))
+rownames(lyrics) <- artist_lyrics$Song
+
+#Below code is only for pairs of words.
+#colnames(lyrics) <- gsub(" ","_",colnames(lyrics))
+
+lyrics$genre = artist_lyrics$Genre
+lyrics$wordcount = artist_lyrics$countwords
+lyrics$score = artist_lyrics$score
+
+#Rename some columns that are causing issues.
+names(lyrics)[names(lyrics) == 'break'] <- 'break1'
+names(lyrics)[names(lyrics) == 'next'] <- 'next1'
+names(lyrics)[names(lyrics) == 'repeat'] <- 'repeat1'
+
+#Split the data into 80/20 split.
+
+#Set a seed to keep results consistent.
+
+set.seed(100)
+
+spl = sample.split(lyrics$genre,.80)
+lyricsTrain = subset(lyrics,spl==TRUE)
+lyricsTest = subset(lyrics,spl==FALSE)
+```
+
+
+```{r}
+#Create the decision tree.
+tree = rpart(genre~.,data=lyricsTrain,method="class")
+
+#Print the tree.
+prp(tree)
+
+#Predict utilizing the decision tree. 
+predlyrics = predict(tree,newdata=lyricsTest,type='class')
+
+#Produce a confusion matrix.
+confusion<-as.data.frame(predlyrics)
+ggplotConfusionMatrix(confusionMatrix(confusion$predlyrics,as.factor(lyricsTest$genre)))
+```
+
+These accuracy results may be different as a seed was set for the report upload.
+
+Overall Accuracy: 54%
+Alt-Rock: 72%
+Country: 44%
+Pop: 61%
+R&B: 23%
+Rap: 71%
+
+It is not surprising that Alt-Rock and Rap was predicted well. They seem to contain very distinct words. It is surprising that Country was not predicted well.
+
+```{r}
+# create randomForest model
+rf <- randomForest(as.factor(genre)~., data=lyricsTrain, importance=TRUE,ntree=1501)
+
+#Variable importance plot.
+varImpPlot(rf)
+
+#Predict on test set using random forest. 
+predRF <- predict(rf, lyricsTest, type="response")
+
+#Create a confusion matrix.
+RFDF<-as.data.frame(predRF)
+ggplotConfusionMatrix(confusionMatrix(RFDF$predRF,as.factor(lyricsTest$genre)))
+```
+
+These accuracy results may be different as a seed was set for the report upload.
+
+Overall Accuracy: 63%
+Alt-Rock: 92%
+Country: 62%
+Pop: 47%
+R&B: 30%
+Rap: 89%
+
+It was surprising to see that Pop fell, but Country increased greatly by using a random forest. Alt-Rock and Rap also greatly increased in accuracy, while R&B is still the lowest. 
+
+My thoughts are that it must be that Pop and Country share a lot of similarities in words? As for R&B, from prior variable exploration it is clear that R&B shares a lot of common characteristics of many genres (similar word and average word count to country, similar terms to Pop and Rap), which is why is often mistook an R&B song for many other genres. 
+
+### EXPERIMENTAL SECTION ### 
+
+```{r}
+#Let's scale the data for the neural entwork.
+normalize <- function(x) {
+  return ((x - min(x)) / (max(x) - min(x)))
+}
+
+scaleddata <- select(lyricsTrain, -genre)
+scaleddata <- as.data.frame(lapply(scaleddata,normalize))
+
+neural = train(scaleddata,as.factor(lyricsTrain$genre),method='nnet',linout=TRUE,trace=FALSE,
+                #Grid of tuning parameters to try:
+                tuneGrid=expand.grid(.size=c(1,5),.decay=c(0,0.001,0.1)))
+
+predNN = predict(neural,lyricsTest)
+
+table(lyricsTest$genre, predNN)
+
+#calculate overall accuracy with Neural Network.
+sum(diag(table(lyricsTest$genre, predNN)))/nrow(lyricsTest)
+```
+
+
